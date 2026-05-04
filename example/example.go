@@ -46,7 +46,7 @@ import (
 	// "optim/go-lbfgsb"'.  To allow this example program to use this
 	// package directly without installing anything and when this
 	// package exists outside a Go workspace, use 'import lbfgsb ".."'.
-	lbfgsb "github.com/idavydov/go-lbfgsb"
+	lbfgsb "github.com/Areltys/go-lbfgsb"
 	//lbfgsb "go-lbfgsb"
 	//lbfsgb ".."
 )

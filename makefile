@@ -10,7 +10,7 @@
 
 # Compiler (I'm only worrying about GCC for now since it supports
 # Fortran, C, and Go.)
-compiler := gcc-11
+compiler := gfortran
 # General compiler options, e.g. -O -g
 compile_options := -g
 # General compiler warnings
@@ -39,18 +39,13 @@ all: liblbfgsb.a lbfgsb.syso
 
 # Dependencies
 
-# Original L-BFGS-B
-lbfgsb/lbfgsb.o: lbfgsb/blas.o lbfgsb/linpack.o lbfgsb/timer.o
-# The Linpack parts do not appear to depend on each other
-
 # Go-Fortran L-BFGS-B interface
-lbfgsb__entry.o: lbfgsb.o
-lbfgsb_c.o: lbfgsb__entry.o
+lbfgsb_c.o: lbfgsb.o
 
 # Libraries and executables
 
 # Object files needed for the libraries
-libObjs := lbfgsb_c.o lbfgsb__entry.o lbfgsb.o blas.o linpack.o timer.o
+libObjs := lbfgsb_c.o lbfgsb.o blas.o linpack.o timer.o
 
 # Library
 liblbfgsb.a: $(libObjs)
@@ -63,10 +58,10 @@ liblbfgsb.a: $(libObjs)
 # were concatenated: 'cat $^ > $@'.  This is called partial link or
 # incremental linking.
 lbfgsb.syso: $(libObjs)
-	ld --relocatable $^ -o $@
+	$(compiler) -r $^ -o $@
 
 # Commands
 
 # Delete derived
 clean:
-	@rm -f *.o lbfgsb*.mod *~ *.o liblbfgsb.a lbfgsb.syso
+	@rm -f *.o *~ liblbfgsb.a lbfgsb.syso
