@@ -29,7 +29,7 @@ import "C"
 import (
 	"fmt"
 	"math"
-	"reflect"
+	"runtime"
 	"sync"
 	"unsafe"
 )
@@ -158,9 +158,9 @@ func (lbfgsb *Lbfgsb) SetBoundsAll(lower, upper float64) *Lbfgsb {
 //
 // The slice is interpreted as an interval as follows:
 //
-//     nil | []: [-Inf, +Inf]
-//     [x]: [-|x|, |x|]
-//     [l, u, ...]: [l, u]
+//	nil | []: [-Inf, +Inf]
+//	[x]: [-|x|, |x|]
+//	[l, u, ...]: [l, u]
 func (lbfgsb *Lbfgsb) SetBoundsSparse(sparseBounds map[int][]float64) *Lbfgsb {
 	// Check object has been initialized
 	if lbfgsb.dimensionality == 0 {
@@ -264,8 +264,8 @@ func (lbfgsb *Lbfgsb) SetLogger(
 func (lbfgsb *Lbfgsb) Minimize(
 	objective FunctionWithGradient,
 	initialPoint []float64) (
-		minimum PointValueGradient,
-		exitStatus ExitStatus) {
+	minimum PointValueGradient,
+	exitStatus ExitStatus) {
 
 	// Make sure object has been initialized
 	lbfgsb.Init(len(initialPoint))
@@ -303,18 +303,25 @@ func (lbfgsb *Lbfgsb) Minimize(
 	lowerBounds := makeCCopySlice_Float(lbfgsb.lowerBounds, dim)
 	upperBounds := makeCCopySlice_Float(lbfgsb.upperBounds, dim)
 
-	// Set up callbacks for function, gradient, and logging
+	// Set up callbacks for function, gradient, and logging.
+	// IDs must be stored on the heap and passed as *uintptr rather than
+	// directly as unsafe.Pointer, or runtime.adjustpointers would panic.
 	cId := registerCallback(objective)
 	defer unregisterCallback(cId)
-	callbackData_c := unsafe.Pointer(cId)
-	var doLogging_c C.int                        // false
-	var logFunctionCallbackData_c unsafe.Pointer // null
+	cIdHeap := new(uintptr)
+	*cIdHeap = cId
+	callbackData_c := unsafe.Pointer(cIdHeap)
+	var doLogging_c C.int
+	var logFunctionCallbackData_c unsafe.Pointer
 	var loggerId uintptr
+	var loggerIdHeap *uintptr
 	if lbfgsb.logger != nil {
-		doLogging_c = C.int(1) // true
+		doLogging_c = C.int(1)
 		loggerId = registerCallback(lbfgsb.logger)
 		defer unregisterCallback(loggerId)
-		logFunctionCallbackData_c = unsafe.Pointer(loggerId)
+		loggerIdHeap = new(uintptr)
+		*loggerIdHeap = loggerId
+		logFunctionCallbackData_c = unsafe.Pointer(loggerIdHeap)
 	}
 
 	// Allocate arrays for return value
@@ -355,6 +362,11 @@ func (lbfgsb *Lbfgsb) Minimize(
 		printControl_c, doLogging_c, logFunctionCallbackData_c,
 		statusMessage_c, statusMessageLength_c,
 	)
+
+	// Pin the heap-allocated ID objects so the GC cannot collect them
+	// before the C call (and all its callbacks) fully completes.
+	runtime.KeepAlive(cIdHeap)
+	runtime.KeepAlive(loggerIdHeap)
 
 	// Convert outputs
 	// Exit status codes match between ExitStatusCode and the C enum
@@ -457,14 +469,14 @@ func go_objective_function_callback(
 	dim_c C.int, point_c, value_c *C.double,
 	callbackData_c unsafe.Pointer,
 	statusMessage_c *C.char, statusMessageLength_c C.int) (
-		statusCode_c C.int) {
+	statusCode_c C.int) {
 
 	var point []float64
 
 	// Convert inputs
 	dim := int(dim_c)
 	wrapCArrayAsGoSlice_Float64(point_c, dim, &point)
-	objective := lookupCallback(uintptr(callbackData_c)).(FunctionWithGradient)
+	objective := lookupCallback(*(*uintptr)(callbackData_c)).(FunctionWithGradient)
 
 	// Evaluate the objective function.  Let panics propagate through
 	// C/Fortran.
@@ -488,14 +500,14 @@ func go_objective_gradient_callback(
 	dim_c C.int, point_c, gradient_c *C.double,
 	callbackData_c unsafe.Pointer,
 	statusMessage_c *C.char, statusMessageLength_c C.int) (
-		statusCode_c C.int) {
+	statusCode_c C.int) {
 
 	var point, gradient, gradRet []float64
 
 	// Convert inputs
 	dim := int(dim_c)
 	wrapCArrayAsGoSlice_Float64(point_c, dim, &point)
-	objective := lookupCallback(uintptr(callbackData_c)).(FunctionWithGradient)
+	objective := lookupCallback(*(*uintptr)(callbackData_c)).(FunctionWithGradient)
 
 	// Evaluate the gradient of the objective function.  Let panics
 	// propagate through C/Fortran.
@@ -521,7 +533,7 @@ func go_log_function_callback(
 	iteration_c, fgEvals_c, fgEvalsTotal_c C.int, stepLength_c C.double,
 	dim_c C.int, x_c *C.double, f_c C.double, g_c *C.double,
 	fDelta_c, fDeltaBound_c, gNorm_c, gNormBound_c C.double) (
-		statusCode_c C.int) {
+	statusCode_c C.int) {
 
 	var x, g []float64
 
@@ -531,7 +543,7 @@ func go_log_function_callback(
 	wrapCArrayAsGoSlice_Float64(g_c, dim, &g)
 
 	// Get the logging function from the callback data
-	logger := lookupCallback(uintptr(logCallbackData_c)).(OptimizationIterationLogger)
+	logger := lookupCallback(*(*uintptr)(logCallbackData_c)).(OptimizationIterationLogger)
 
 	// Call the logging function.  Let panics propagate through
 	// C/Fortran.
@@ -555,15 +567,7 @@ func go_log_function_callback(
 	return
 }
 
-// wrapCArrayAsGoSlice_Float64 allows a C array to be treated as a Go
-// slice.  Based on https://code.google.com/p/go-wiki/wiki/cgo.  This
-// only works if the Go and C types happen to be interoperable (binary
-// compatible), but that seems to be the case so far.
-func wrapCArrayAsGoSlice_Float64(array *C.double, length int,
-	slice *[]float64) {
-
-	sliceHeader := (*reflect.SliceHeader)(unsafe.Pointer(slice))
-	sliceHeader.Cap = length
-	sliceHeader.Len = length
-	sliceHeader.Data = uintptr(unsafe.Pointer(array))
+// wrapCArrayAsGoSlice_Float64 wraps a C array as a Go slice without copying.
+func wrapCArrayAsGoSlice_Float64(array *C.double, length int, slice *[]float64) {
+	*slice = unsafe.Slice((*float64)(unsafe.Pointer(array)), length)
 }
